@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+!server/.env.test.example
+
+.DS_Store
+*.log
+*.tsbuildinfo
+
+server/src/generated/prisma
+/server/src/generated/

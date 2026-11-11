@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: clinic-booking-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm ci && npm run build
+    preDeployCommand: npm run db:deploy
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false
