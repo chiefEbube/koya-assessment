@@ -9,6 +9,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), tailwindcss()],
     server: {
+      allowedHosts: ["stainless-effects-confess.ngrok-free.dev"],
       proxy: {
         "/api": {
           target: env.BACKEND_API_URL || "http://localhost:5000",
