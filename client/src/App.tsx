@@ -166,7 +166,7 @@ export default function App() {
 
       <section className="hero">
         <div className="hero-copy">
-          <p className="eyebrow"><span className="pulse-dot" /> CARE THAT FITS YOUR DAY</p>
+          {/* <p className="eyebrow"><span className="pulse-dot" /> CARE THAT FITS YOUR DAY</p> */}
           <h1>Make time<br />for <em>feeling better.</em></h1>
           <p className="hero-description">
             Find a time with a trusted provider. A few clicks is all it takes to get started.
