@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiRequest,
+  ApiError,
   Booking,
   formatDateTime,
   Slot,
@@ -37,6 +38,36 @@ function dateFromKey(value: string) {
   return new Date(`${value}T12:00:00`);
 }
 
+function friendlyErrorMessage(error: unknown, fallback: string) {
+  if (!(error instanceof ApiError)) return fallback;
+
+  switch (error.message) {
+    case "slot already booked":
+      return "That time was just booked. Please choose another available time.";
+    case "slot has already started":
+      return "That appointment time has passed. Please choose another time.";
+    case "slot not found":
+      return "That appointment time is no longer available. Please choose another.";
+    case "too many booking attempts":
+      return "Please wait a minute before trying to book again.";
+    case "booking not found":
+      return "We couldn't find an appointment with that confirmation number. Check it and try again.";
+    case "booking already cancelled":
+      return "This appointment has already been cancelled.";
+  }
+
+  if (error.status >= 500) {
+    return "We're having trouble right now. Please try again in a moment.";
+  }
+  if (error.status === 401) {
+    return "We couldn't verify your request. Please refresh the page and try again.";
+  }
+  if (error.status === 400 || error.status === 422) {
+    return "Please check the information and try again.";
+  }
+  return fallback;
+}
+
 export default function App() {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [selectedDoctor, setSelectedDoctor] = useState("");
@@ -48,6 +79,8 @@ export default function App() {
   const [slotCursors, setSlotCursors] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState("");
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
+  const [bookingModalOpen, setBookingModalOpen] = useState(false);
+  const [bookingStep, setBookingStep] = useState<"time" | "details">("time");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [notice, setNotice] = useState("");
@@ -69,7 +102,7 @@ export default function App() {
       setDoctors(result.doctors);
       setError("");
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Could not load doctors.");
+      setError(friendlyErrorMessage(loadError, "We couldn't load available doctors. Please try again."));
     } finally {
       setLoadingDoctors(false);
     }
@@ -96,7 +129,7 @@ export default function App() {
       return true;
     } catch (loadError) {
       if (requestId === slotsRequestRef.current) {
-        setError(loadError instanceof Error ? loadError.message : "Could not load appointments.");
+        setError(friendlyErrorMessage(loadError, "We couldn't load available times. Please try again."));
       }
       return false;
     } finally {
@@ -116,13 +149,11 @@ export default function App() {
       first.localeCompare(second)
     );
   }, [slots]);
-  const selectedDateSlots = slotsByDate.find(([date]) => date === selectedDate)?.[1] ?? [];
+  const bookingDateSlots = slotsByDate.find(([date]) => date === selectedDate)?.[1] ?? [];
 
   useEffect(() => {
-    if (slotsByDate.length === 0) {
-      if (selectedDate) setSelectedDate("");
-    } else if (!slotsByDate.some(([date]) => date === selectedDate)) {
-      setSelectedDate(slotsByDate[0][0]);
+    if (selectedDate && !slotsByDate.some(([date]) => date === selectedDate)) {
+      setSelectedDate("");
     }
   }, [selectedDate, slotsByDate]);
 
@@ -133,6 +164,24 @@ export default function App() {
       setSlotCursors((previous) => [...previous, cursor]);
     }
     setSlotPage(page);
+  }
+
+  function chooseCalendarDate(date: string, daySlots: Slot[]) {
+    setSelectedDate(date);
+    setError("");
+    setBookingModalOpen(true);
+    if (daySlots.length === 1) {
+      setSelectedSlot(daySlots[0]);
+      setBookingStep("details");
+    } else {
+      setSelectedSlot(null);
+      setBookingStep("time");
+    }
+  }
+
+  function closeBookingModal() {
+    setBookingModalOpen(false);
+    setSelectedSlot(null);
   }
 
   useEffect(() => {
@@ -173,6 +222,7 @@ export default function App() {
       setName("");
       setEmail(payload.email);
       submissionRef.current = null;
+      setBookingModalOpen(false);
       await loadDoctors();
       if (selectedDoctor) {
         setSlotPage(0);
@@ -183,7 +233,7 @@ export default function App() {
         await loadBookings(payload.email, true);
       }
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Could not complete the booking.");
+      setError(friendlyErrorMessage(submitError, "We couldn't complete your booking. Please try again."));
     } finally {
       setSubmitting(false);
     }
@@ -192,7 +242,7 @@ export default function App() {
   async function loadBookings(value = bookingEmail, replace = false, cursor?: string) {
     const normalizedEmail = value.trim().toLowerCase();
     if (!normalizedEmail) {
-      setError("Enter the email address used for your booking.");
+      setError("Enter the email address you used when booking.");
       return;
     }
     setLoadingBookings(true);
@@ -207,7 +257,7 @@ export default function App() {
       setBookingEmail(normalizedEmail);
       setNextCursor(result.next_cursor);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Could not load your bookings.");
+      setError(friendlyErrorMessage(loadError, "We couldn't load your appointments. Please try again."));
     } finally {
       setLoadingBookings(false);
     }
@@ -223,7 +273,7 @@ export default function App() {
       setLookupBooking(booking);
     } catch (lookupError) {
       setLookupBooking(null);
-      setError(lookupError instanceof Error ? lookupError.message : "Could not find that booking.");
+      setError(friendlyErrorMessage(lookupError, "We couldn't find that appointment. Check the confirmation number and try again."));
     }
   }
 
@@ -246,7 +296,7 @@ export default function App() {
         await loadSlots(selectedDoctor);
       }
     } catch (cancelError) {
-      setError(cancelError instanceof Error ? cancelError.message : "Could not cancel this booking.");
+      setError(friendlyErrorMessage(cancelError, "We couldn't cancel this appointment. Please try again."));
     }
   }
 
@@ -378,7 +428,7 @@ export default function App() {
                         type="button"
                         aria-pressed={selectedDate === date}
                         aria-label={`${new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" }).format(dateValue)}, ${daySlots.length} available ${daySlots.length === 1 ? "time" : "times"}`}
-                        onClick={() => setSelectedDate(date)}
+                        onClick={() => chooseCalendarDate(date, daySlots)}
                       >
                         <span className="calendar-day-weekday">
                           {new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(dateValue)}
@@ -392,35 +442,8 @@ export default function App() {
                     );
                   })}
                 </div>
-                <section className="calendar-times" aria-labelledby="calendar-times-title">
-                  <div className="calendar-times-heading">
-                    <h4 id="calendar-times-title">
-                      {selectedDate
-                        ? new Intl.DateTimeFormat(undefined, {
-                            weekday: "long",
-                            month: "long",
-                            day: "numeric",
-                          }).format(dateFromKey(selectedDate))
-                        : "Available times"}
-                    </h4>
-                    <span>{selectedDateSlots.length} available</span>
-                  </div>
-                  <div className="calendar-time-grid">
-                    {selectedDateSlots.map((slot) => (
-                      <button
-                        className="calendar-time"
-                        key={slot.id}
-                        type="button"
-                        onClick={() => { setSelectedSlot(slot); setError(""); }}
-                      >
-                        {new Intl.DateTimeFormat(undefined, {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        }).format(new Date(slot.start))}
-                      </button>
-                    ))}
-                  </div>
-                </section>
+                <p className="calendar-guidance">Select a day and choose an available time.</p>
+                {(slotPage > 0 || nextSlotCursor) && (
                 <nav className="slot-pagination" aria-label="Available appointment pages">
                   <button
                     className="slot-page-button"
@@ -448,6 +471,7 @@ export default function App() {
                     {loadingSlots ? "Loading…" : "Next"}
                   </button>
                 </nav>
+                )}
               </div>
             )}
           </div>
@@ -516,22 +540,68 @@ export default function App() {
         <a href="#appointments">Back to top ↑</a>
       </footer>
 
-      {selectedSlot && (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedSlot(null); }}>
-          <section className="booking-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-            <button className="modal-close" type="button" onClick={() => setSelectedSlot(null)} aria-label="Close booking form">×</button>
-            <h2 id="modal-title">Book your visit</h2>
-            <div className="selected-time"><strong>{formatDateTime(selectedSlot.start)}</strong><span>{selectedSlot.provider}</span></div>
-            <form onSubmit={submitBooking} className="booking-form">
-              <label htmlFor="name">Your name</label>
-              <input id="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} />
-              <label htmlFor="email">Email address</label>
-              <input id="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required maxLength={254} />
-              <button className="button button-dark button-wide" type="submit" disabled={submitting}>
-                {submitting ? "Confirming…" : "Confirm appointment"}
-              </button>
-              <span className="privacy-note">Your details are only used to manage this appointment.</span>
-            </form>
+      {bookingModalOpen && selectedDate && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeBookingModal(); }}>
+          <section className={`booking-modal ${bookingStep === "time" ? "booking-modal-time" : ""}`} role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <button className="modal-close" type="button" onClick={closeBookingModal} aria-label="Close booking form">×</button>
+            {bookingStep === "time" ? (
+              <>
+                <h2 id="modal-title">
+                  Select your preferred time for{" "}
+                  {new Intl.DateTimeFormat(undefined, {
+                    weekday: "long",
+                    day: "numeric",
+                    month: "long",
+                  }).format(dateFromKey(selectedDate))}
+                </h2>
+                <p className="time-picker-doctor">{selectedDoctor}</p>
+                <div className="calendar-time-grid">
+                  {bookingDateSlots.map((slot) => (
+                    <button
+                      className="calendar-time"
+                      key={slot.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSlot(slot);
+                        setBookingStep("details");
+                      }}
+                    >
+                      {new Intl.DateTimeFormat(undefined, {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      }).format(new Date(slot.start))}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : selectedSlot && (
+              <>
+                <h2 id="modal-title">Book your visit</h2>
+                <div className="selected-time"><strong>{formatDateTime(selectedSlot.start)}</strong><span>{selectedSlot.provider}</span></div>
+                {bookingDateSlots.length > 1 && (
+                  <button
+                    className="change-time"
+                    type="button"
+                    onClick={() => {
+                      setSelectedSlot(null);
+                      setBookingStep("time");
+                    }}
+                  >
+                    Change time
+                  </button>
+                )}
+                <form onSubmit={submitBooking} className="booking-form">
+                  <label htmlFor="name">Your name</label>
+                  <input id="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} />
+                  <label htmlFor="email">Email address</label>
+                  <input id="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required maxLength={254} />
+                  <button className="button button-dark button-wide" type="submit" disabled={submitting}>
+                    {submitting ? "Confirming…" : "Confirm appointment"}
+                  </button>
+                  <span className="privacy-note">Your details are only used to manage this appointment.</span>
+                </form>
+              </>
+            )}
           </section>
         </div>
       )}
