@@ -7,17 +7,46 @@ import {
 } from "./lib/api";
 
 type BookingPage = { bookings: Booking[]; next_cursor: string | null };
-type SlotList = { slots: Slot[] };
+type Doctor = { name: string; available_slots: number };
+type DoctorList = { doctors: Doctor[] };
+type SlotPage = { slots: Slot[]; next_cursor: string | null };
 
 function requestKey() {
   return globalThis.crypto?.randomUUID?.() ??
     `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function doctorInitials(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    return `${words[0][0]}${words[words.length - 1][0]}`.toUpperCase();
+  }
+  return (words[0] ?? "").slice(0, 2).toUpperCase();
+}
+
+function localDateKey(value: string) {
+  const date = new Date(value);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function dateFromKey(value: string) {
+  return new Date(`${value}T12:00:00`);
+}
+
 export default function App() {
+  const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const [selectedDoctor, setSelectedDoctor] = useState("");
   const [slots, setSlots] = useState<Slot[]>([]);
-  const [provider, setProvider] = useState("");
-  const [loadingSlots, setLoadingSlots] = useState(true);
+  const [loadingDoctors, setLoadingDoctors] = useState(true);
+  const [loadingSlots, setLoadingSlots] = useState(false);
+  const [nextSlotCursor, setNextSlotCursor] = useState<string | null>(null);
+  const [slotPage, setSlotPage] = useState(0);
+  const [slotCursors, setSlotCursors] = useState<string[]>([]);
+  const [selectedDate, setSelectedDate] = useState("");
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -31,31 +60,88 @@ export default function App() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingBookings, setLoadingBookings] = useState(false);
   const submissionRef = useRef<{ signature: string; key: string } | null>(null);
+  const slotsRequestRef = useRef(0);
 
-  const loadSlots = useCallback(async () => {
-    setLoadingSlots(true);
+  const loadDoctors = useCallback(async () => {
+    setLoadingDoctors(true);
     try {
-      const result = await apiRequest<SlotList>("/slots");
-      setSlots(result.slots);
+      const result = await apiRequest<DoctorList>("/doctors");
+      setDoctors(result.doctors);
       setError("");
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Could not load appointments.");
+      setError(loadError instanceof Error ? loadError.message : "Could not load doctors.");
     } finally {
-      setLoadingSlots(false);
+      setLoadingDoctors(false);
     }
   }, []);
 
-  useEffect(() => {
-    void loadSlots();
-  }, [loadSlots]);
+  const loadSlots = useCallback(async (
+    doctor: string,
+    cursor?: string
+  ): Promise<boolean> => {
+    const requestId = ++slotsRequestRef.current;
+    setLoadingSlots(true);
+    setError("");
+    try {
+      const query = new URLSearchParams({
+        provider: doctor,
+        available_only: "true",
+        limit: "50",
+      });
+      if (cursor) query.set("cursor", cursor);
+      const result = await apiRequest<SlotPage>(`/slots?${query}`);
+      if (requestId !== slotsRequestRef.current) return false;
+      setSlots(result.slots);
+      setNextSlotCursor(result.next_cursor);
+      return true;
+    } catch (loadError) {
+      if (requestId === slotsRequestRef.current) {
+        setError(loadError instanceof Error ? loadError.message : "Could not load appointments.");
+      }
+      return false;
+    } finally {
+      if (requestId === slotsRequestRef.current) setLoadingSlots(false);
+    }
+  }, []);
 
-  const providers = useMemo(
-    () => [...new Set(slots.map((slot) => slot.provider))].sort(),
-    [slots]
-  );
-  const visibleSlots = slots.filter(
-    (slot) => slot.available && (!provider || slot.provider === provider)
-  );
+  const slotsByDate = useMemo(() => {
+    const groups = new Map<string, Slot[]>();
+    for (const slot of slots) {
+      const date = localDateKey(slot.start);
+      const daySlots = groups.get(date) ?? [];
+      daySlots.push(slot);
+      groups.set(date, daySlots);
+    }
+    return [...groups.entries()].sort(([first], [second]) =>
+      first.localeCompare(second)
+    );
+  }, [slots]);
+  const selectedDateSlots = slotsByDate.find(([date]) => date === selectedDate)?.[1] ?? [];
+
+  useEffect(() => {
+    if (slotsByDate.length === 0) {
+      if (selectedDate) setSelectedDate("");
+    } else if (!slotsByDate.some(([date]) => date === selectedDate)) {
+      setSelectedDate(slotsByDate[0][0]);
+    }
+  }, [selectedDate, slotsByDate]);
+
+  async function changeSlotPage(cursor: string | undefined, page: number) {
+    if (!selectedDoctor || loadingSlots) return;
+    if (!(await loadSlots(selectedDoctor, cursor))) return;
+    if (page > slotCursors.length && cursor) {
+      setSlotCursors((previous) => [...previous, cursor]);
+    }
+    setSlotPage(page);
+  }
+
+  useEffect(() => {
+    void loadDoctors();
+  }, [loadDoctors]);
+
+  useEffect(() => {
+    if (selectedDoctor) void loadSlots(selectedDoctor);
+  }, [loadSlots, selectedDoctor]);
 
   async function submitBooking(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -87,7 +173,12 @@ export default function App() {
       setName("");
       setEmail(payload.email);
       submissionRef.current = null;
-      await loadSlots();
+      await loadDoctors();
+      if (selectedDoctor) {
+        setSlotPage(0);
+        setSlotCursors([]);
+        await loadSlots(selectedDoctor);
+      }
       if (bookingEmail.toLowerCase() === payload.email) {
         await loadBookings(payload.email, true);
       }
@@ -148,7 +239,12 @@ export default function App() {
       );
       if (lookupBooking?.id === updated.id) setLookupBooking(updated);
       setNotice("Your appointment has been cancelled.");
-      await loadSlots();
+      await loadDoctors();
+      if (selectedDoctor) {
+        setSlotPage(0);
+        setSlotCursors([]);
+        await loadSlots(selectedDoctor);
+      }
     } catch (cancelError) {
       setError(cancelError instanceof Error ? cancelError.message : "Could not cancel this booking.");
     }
@@ -194,45 +290,166 @@ export default function App() {
       <section className="appointments-section" id="appointments">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">YOUR NEXT STEP</p>
-            <h2>Choose a time</h2>
+            <h2>Choose a doctor</h2>
+            <p className="section-description">Select a doctor to see their available appointment times.</p>
           </div>
-          <label className="provider-filter">
-            <span>Provider</span>
-            <select value={provider} onChange={(event) => setProvider(event.target.value)}>
-              <option value="">All providers</option>
-              {providers.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
-          </label>
         </div>
 
-        {loadingSlots ? (
-          <div className="empty-state"><span className="loader" /> Finding available times…</div>
-        ) : visibleSlots.length === 0 ? (
+        {loadingDoctors ? (
+          <div className="empty-state"><span className="loader" /> Finding available doctors…</div>
+        ) : doctors.length === 0 ? (
           <div className="empty-state">
             <span className="empty-icon">✳</span>
-            <h3>No open times just yet</h3>
-            <p>Try another provider, or check back soon for new appointments.</p>
+            <h3>No doctors available just yet</h3>
+            <p>Please check back soon for new appointments.</p>
           </div>
         ) : (
-          <div className="slot-grid">
-            {visibleSlots.map((slot) => (
-              <article className="slot-card" key={slot.id}>
-                <div className="slot-card-top">
-                  <span className="availability"><span /> Available</span>
-                  <span className="slot-provider">{slot.provider}</span>
-                </div>
-                <p className="slot-date">{formatDateTime(slot.start)}</p>
-                <p className="slot-duration">
-                  {new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(slot.start))}
-                  {" — "}
-                  {new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(slot.end))}
-                </p>
-                <button className="button button-outline" onClick={() => { setSelectedSlot(slot); setError(""); }}>
-                  Book this time <span aria-hidden="true">↗</span>
-                </button>
-              </article>
+          <div className="doctor-grid">
+            {doctors.map((doctor) => (
+              <button
+                className={`doctor-card ${selectedDoctor === doctor.name ? "doctor-card-selected" : ""}`}
+                key={doctor.name}
+                type="button"
+                aria-pressed={selectedDoctor === doctor.name}
+                onClick={() => {
+                  if (doctor.name === selectedDoctor) return;
+                  slotsRequestRef.current += 1;
+                  setSelectedDoctor(doctor.name);
+                  setSlots([]);
+                  setNextSlotCursor(null);
+                  setSlotPage(0);
+                  setSlotCursors([]);
+                  setSelectedDate("");
+                }}
+              >
+                <span className="doctor-avatar" aria-hidden="true">{doctorInitials(doctor.name)}</span>
+                <span className="doctor-card-copy">
+                  <strong>{doctor.name}</strong>
+                  <span className="doctor-count">
+                    {doctor.available_slots} available {doctor.available_slots === 1 ? "time" : "times"}
+                  </span>
+                </span>
+                <span className="doctor-arrow" aria-hidden="true">↗</span>
+              </button>
             ))}
+          </div>
+        )}
+
+        {selectedDoctor && (
+          <div className="doctor-times">
+            <div className="times-heading">
+              <div>
+                <h3>Available slots with {selectedDoctor}</h3>
+              </div>
+              <button
+                className="close-times"
+                type="button"
+                aria-label={`Close available times for ${selectedDoctor}`}
+                onClick={() => {
+                  slotsRequestRef.current += 1;
+                  setSelectedDoctor("");
+                  setSlots([]);
+                  setNextSlotCursor(null);
+                  setSlotPage(0);
+                  setSlotCursors([]);
+                  setSelectedDate("");
+                }}
+              >
+                ×
+              </button>
+            </div>
+            {loadingSlots && slots.length === 0 ? (
+              <div className="empty-state"><span className="loader" /> Finding available times…</div>
+            ) : slots.length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-icon">✳</span>
+                <h3>No open times just yet</h3>
+                <p>Choose another doctor, or check back soon for new appointments.</p>
+              </div>
+            ) : (
+              <div className="calendar-view">
+                <div className="calendar-days" role="group" aria-label="Choose an available day">
+                  {slotsByDate.map(([date, daySlots]) => {
+                    const dateValue = dateFromKey(date);
+                    return (
+                      <button
+                        className="calendar-day"
+                        key={date}
+                        type="button"
+                        aria-pressed={selectedDate === date}
+                        aria-label={`${new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" }).format(dateValue)}, ${daySlots.length} available ${daySlots.length === 1 ? "time" : "times"}`}
+                        onClick={() => setSelectedDate(date)}
+                      >
+                        <span className="calendar-day-weekday">
+                          {new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(dateValue)}
+                        </span>
+                        <strong className="calendar-day-number">{dateValue.getDate()}</strong>
+                        <span className="calendar-day-month">
+                          {new Intl.DateTimeFormat(undefined, { month: "short" }).format(dateValue)}
+                        </span>
+                        <span className="calendar-day-count">{daySlots.length} {daySlots.length === 1 ? "time" : "times"}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <section className="calendar-times" aria-labelledby="calendar-times-title">
+                  <div className="calendar-times-heading">
+                    <h4 id="calendar-times-title">
+                      {selectedDate
+                        ? new Intl.DateTimeFormat(undefined, {
+                            weekday: "long",
+                            month: "long",
+                            day: "numeric",
+                          }).format(dateFromKey(selectedDate))
+                        : "Available times"}
+                    </h4>
+                    <span>{selectedDateSlots.length} available</span>
+                  </div>
+                  <div className="calendar-time-grid">
+                    {selectedDateSlots.map((slot) => (
+                      <button
+                        className="calendar-time"
+                        key={slot.id}
+                        type="button"
+                        onClick={() => { setSelectedSlot(slot); setError(""); }}
+                      >
+                        {new Intl.DateTimeFormat(undefined, {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        }).format(new Date(slot.start))}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+                <nav className="slot-pagination" aria-label="Available appointment pages">
+                  <button
+                    className="slot-page-button"
+                    type="button"
+                    disabled={loadingSlots || slotPage === 0}
+                    onClick={() => {
+                      const previousPage = slotPage - 1;
+                      const cursor = previousPage === 0
+                        ? undefined
+                        : slotCursors[previousPage - 1];
+                      void changeSlotPage(cursor, previousPage);
+                    }}
+                  >
+                    Previous
+                  </button>
+                  <span className="slot-page-status" aria-live="polite">
+                    Page {slotPage + 1}
+                  </span>
+                  <button
+                    className="slot-page-button"
+                    type="button"
+                    disabled={loadingSlots || !nextSlotCursor}
+                    onClick={() => void changeSlotPage(nextSlotCursor ?? undefined, slotPage + 1)}
+                  >
+                    {loadingSlots ? "Loading…" : "Next"}
+                  </button>
+                </nav>
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -303,7 +520,6 @@ export default function App() {
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedSlot(null); }}>
           <section className="booking-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
             <button className="modal-close" type="button" onClick={() => setSelectedSlot(null)} aria-label="Close booking form">×</button>
-            <p className="eyebrow">ONE STEP CLOSER</p>
             <h2 id="modal-title">Book your visit</h2>
             <div className="selected-time"><strong>{formatDateTime(selectedSlot.start)}</strong><span>{selectedSlot.provider}</span></div>
             <form onSubmit={submitBooking} className="booking-form">

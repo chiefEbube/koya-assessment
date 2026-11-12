@@ -1,14 +1,15 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
-import { serializeBooking, serializeSlot } from "../lib/serialize.js";
+import { serializeBooking } from "../lib/serialize.js";
 import {
   parseBookingsQuery,
-  parseProvider,
   parseResetBody,
+  parseSlotsQuery,
 } from "../lib/validation.js";
 import { createBooking } from "../services/booking-service.js";
 import { listBookings } from "../services/booking-list-service.js";
+import { listAvailableDoctors, listSlots } from "../services/slot-list-service.js";
 
 const router = Router();
 
@@ -26,23 +27,20 @@ router.post("/reset", async (req, res) => {
   res.status(200).end();
 });
 
+router.get("/doctors", async (_req, res) => {
+  res.json(await listAvailableDoctors());
+});
+
 router.get("/slots", async (req, res) => {
-  const provider = parseProvider(req.query.provider);
-  const slots = await prisma.slot.findMany({
-    where: provider === undefined ? undefined : { provider },
-    orderBy: { start: "asc" },
-    include: {
-      booking: {
-        where: { status: "confirmed" },
-        select: { id: true },
-      },
-    },
-  });
-  res.json({
-    slots: slots.map(({ booking, ...slot }) =>
-      serializeSlot(slot, booking.length === 0)
-    ),
-  });
+  const query = parseSlotsQuery(req.query);
+  res.json(
+    await listSlots(
+      query.provider,
+      query.limit,
+      query.cursor,
+      query.availableOnly
+    )
+  );
 });
 
 router.get("/bookings", async (req, res) => {

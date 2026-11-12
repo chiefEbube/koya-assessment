@@ -29,7 +29,8 @@ All API routes, except `GET /health`, require `X-API-Key`.
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/reset` | Replace all slots and clear bookings/attempts/idempotency data; responds with an empty 200 body |
-| GET | `/slots` | List slots by start time; optional exact `provider` filter |
+| GET | `/doctors` | List doctors with at least one unbooked slot |
+| GET | `/slots` | List slots by start time with `limit` and `cursor` pagination; optional `provider` and `available_only=true` filters |
 | POST | `/bookings` | Create a confirmed booking; supports `Idempotency-Key` and per-email rate limiting |
 | GET | `/bookings/:id` | Get a booking |
 | DELETE | `/bookings/:id` | Cancel a confirmed booking |

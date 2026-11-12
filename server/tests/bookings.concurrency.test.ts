@@ -69,6 +69,58 @@ describe("clinic booking API", () => {
       .expect(({ body }) => expect(body.id).toBe(response.body.id));
   });
 
+  it("lists available doctors and paginates available slots deterministically", async () => {
+    await reset([
+      slot("slot-a"),
+      slot("slot-b"),
+      slot("slot-c"),
+      { ...slot("slot-d"), provider: "Dr Unavailable" },
+    ]);
+    await request(app)
+      .post("/bookings")
+      .set(headers)
+      .send({
+        slot_id: "slot-d",
+        name: "Ada",
+        email: "ada@example.com",
+      })
+      .expect(201);
+
+    await request(app)
+      .get("/doctors")
+      .set(headers)
+      .expect(200)
+      .expect(({ body }) => expect(body.doctors).toEqual([
+        { name: "Dr Test", available_slots: 3 },
+      ]));
+
+    const firstPage = await request(app)
+      .get("/slots")
+      .query({ provider: "Dr Test", available_only: "true", limit: 2 })
+      .set(headers)
+      .expect(200);
+    expect(firstPage.body.slots.map((item: { id: string }) => item.id)).toEqual([
+      "slot-a",
+      "slot-b",
+    ]);
+    expect(firstPage.body.next_cursor).toEqual(expect.any(String));
+
+    const secondPage = await request(app)
+      .get("/slots")
+      .query({
+        provider: "Dr Test",
+        available_only: "true",
+        limit: 2,
+        cursor: firstPage.body.next_cursor,
+      })
+      .set(headers)
+      .expect(200);
+    expect(secondPage.body.slots.map((item: { id: string }) => item.id)).toEqual([
+      "slot-c",
+    ]);
+    expect(secondPage.body.next_cursor).toBeNull();
+  });
+
   it("requires the API key and validates booking fields", async () => {
     await request(app).get("/slots").expect(401);
     await request(app)
