@@ -177,6 +177,18 @@ export default function App() {
     }
   }, [selectedDate, slotsByDate]);
 
+  useEffect(() => {
+    if (!selectedDoctor || doctors.some((doctor) => doctor.name === selectedDoctor)) {
+      return;
+    }
+
+    slotsRequestRef.current += 1;
+    setSelectedDoctor("");
+    setSlots([]);
+    setSelectedDate("");
+    setLoadingSlots(false);
+  }, [doctors, selectedDoctor]);
+
   function chooseCalendarDate(date: string, daySlots: Slot[]) {
     setSelectedDate(date);
     setBookingError("");
