@@ -139,7 +139,9 @@ export async function createBooking(input: BookingInput, idempotencyKey?: string
         }
       }
 
-      const retryAfter = await recordAttempt(transaction, normalizedEmail);
+      const retryAfter = normalizedEmail
+        ? await recordAttempt(transaction, normalizedEmail)
+        : undefined;
       const response: StoredResponse =
         retryAfter === undefined
           ? await createBookingResponse(transaction, input)

@@ -9,8 +9,9 @@ import {
 
 type BookingPage = { bookings: Booking[]; next_cursor: string | null };
 type Doctor = { name: string; available_slots: number };
-type DoctorList = { doctors: Doctor[] };
-type SlotPage = { slots: Slot[]; next_cursor: string | null };
+type SlotList = { slots: Slot[] };
+type InlineMessage = { type: "error" | "success" | "info"; text: string };
+type BookingMessageLocation = "lookup" | "appointments";
 
 function requestKey() {
   return globalThis.crypto?.randomUUID?.() ??
@@ -72,64 +73,83 @@ export default function App() {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [selectedDoctor, setSelectedDoctor] = useState("");
   const [slots, setSlots] = useState<Slot[]>([]);
+  const [slotById, setSlotById] = useState<Record<string, Slot>>({});
   const [loadingDoctors, setLoadingDoctors] = useState(true);
   const [loadingSlots, setLoadingSlots] = useState(false);
-  const [nextSlotCursor, setNextSlotCursor] = useState<string | null>(null);
-  const [slotPage, setSlotPage] = useState(0);
-  const [slotCursors, setSlotCursors] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState("");
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [bookingStep, setBookingStep] = useState<"time" | "details">("time");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
+  const [availabilityError, setAvailabilityError] = useState("");
+  const [bookingError, setBookingError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [bookingSuccess, setBookingSuccess] = useState<{
+    booking: Booking;
+    slot: Slot;
+  } | null>(null);
   const [lookupId, setLookupId] = useState("");
   const [lookupBooking, setLookupBooking] = useState<Booking | null>(null);
+  const [lookupMessage, setLookupMessage] = useState<InlineMessage | null>(null);
+  const [lookingUp, setLookingUp] = useState(false);
+  const [bookingDetailsOpen, setBookingDetailsOpen] = useState(false);
+  const [pendingCancellation, setPendingCancellation] = useState<{
+    booking: Booking;
+    location: BookingMessageLocation;
+  } | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [bookingEmail, setBookingEmail] = useState("");
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [appointmentsError, setAppointmentsError] = useState("");
+  const [appointmentsMessage, setAppointmentsMessage] = useState<InlineMessage | null>(null);
+  const [bookingMessages, setBookingMessages] = useState<Record<string, InlineMessage>>({});
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingBookings, setLoadingBookings] = useState(false);
   const submissionRef = useRef<{ signature: string; key: string } | null>(null);
   const slotsRequestRef = useRef(0);
+  const cancelledBookingIdsRef = useRef(new Set<string>());
 
   const loadDoctors = useCallback(async () => {
     setLoadingDoctors(true);
+    setAvailabilityError("");
     try {
-      const result = await apiRequest<DoctorList>("/doctors");
-      setDoctors(result.doctors);
-      setError("");
+      const result = await apiRequest<SlotList>("/slots");
+      setSlotById(Object.fromEntries(result.slots.map((slot) => [slot.id, slot])));
+      const availableByProvider = new Map<string, number>();
+      for (const slot of result.slots) {
+        if (slot.available) {
+          availableByProvider.set(
+            slot.provider,
+            (availableByProvider.get(slot.provider) ?? 0) + 1
+          );
+        }
+      }
+      setDoctors(
+        [...availableByProvider.entries()]
+          .map(([name, available_slots]) => ({ name, available_slots }))
+          .sort((first, second) => first.name.localeCompare(second.name))
+      );
     } catch (loadError) {
-      setError(friendlyErrorMessage(loadError, "We couldn't load available doctors. Please try again."));
+      setAvailabilityError(friendlyErrorMessage(loadError, "We couldn't load available doctors. Please try again."));
     } finally {
       setLoadingDoctors(false);
     }
   }, []);
 
-  const loadSlots = useCallback(async (
-    doctor: string,
-    cursor?: string
-  ): Promise<boolean> => {
+  const loadSlots = useCallback(async (doctor: string): Promise<boolean> => {
     const requestId = ++slotsRequestRef.current;
     setLoadingSlots(true);
-    setError("");
+    setAvailabilityError("");
     try {
-      const query = new URLSearchParams({
-        provider: doctor,
-        available_only: "true",
-        limit: "50",
-      });
-      if (cursor) query.set("cursor", cursor);
-      const result = await apiRequest<SlotPage>(`/slots?${query}`);
+      const query = new URLSearchParams({ provider: doctor });
+      const result = await apiRequest<SlotList>(`/slots?${query}`);
       if (requestId !== slotsRequestRef.current) return false;
-      setSlots(result.slots);
-      setNextSlotCursor(result.next_cursor);
+      setSlots(result.slots.filter((slot) => slot.available));
       return true;
     } catch (loadError) {
       if (requestId === slotsRequestRef.current) {
-        setError(friendlyErrorMessage(loadError, "We couldn't load available times. Please try again."));
+        setAvailabilityError(friendlyErrorMessage(loadError, "We couldn't load available times. Please try again."));
       }
       return false;
     } finally {
@@ -157,18 +177,9 @@ export default function App() {
     }
   }, [selectedDate, slotsByDate]);
 
-  async function changeSlotPage(cursor: string | undefined, page: number) {
-    if (!selectedDoctor || loadingSlots) return;
-    if (!(await loadSlots(selectedDoctor, cursor))) return;
-    if (page > slotCursors.length && cursor) {
-      setSlotCursors((previous) => [...previous, cursor]);
-    }
-    setSlotPage(page);
-  }
-
   function chooseCalendarDate(date: string, daySlots: Slot[]) {
     setSelectedDate(date);
-    setError("");
+    setBookingError("");
     setBookingModalOpen(true);
     if (daySlots.length === 1) {
       setSelectedSlot(daySlots[0]);
@@ -182,6 +193,7 @@ export default function App() {
   function closeBookingModal() {
     setBookingModalOpen(false);
     setSelectedSlot(null);
+    setBookingError("");
   }
 
   useEffect(() => {
@@ -207,17 +219,18 @@ export default function App() {
     }
 
     setSubmitting(true);
-    setError("");
-    setNotice("");
+    setBookingError("");
     try {
       const booking = await apiRequest<Booking>("/bookings", {
         method: "POST",
         headers: { "Idempotency-Key": submissionRef.current.key },
         body: JSON.stringify(payload),
       });
-      setNotice(`You're booked. Your confirmation number is ${booking.id}.`);
-      setLookupBooking(booking);
-      setLookupId(booking.id);
+      setLookupMessage(null);
+      setLookupBooking(null);
+      setLookupId("");
+      setBookingDetailsOpen(false);
+      setBookingSuccess({ booking, slot: selectedSlot });
       setSelectedSlot(null);
       setName("");
       setEmail(payload.email);
@@ -225,15 +238,13 @@ export default function App() {
       setBookingModalOpen(false);
       await loadDoctors();
       if (selectedDoctor) {
-        setSlotPage(0);
-        setSlotCursors([]);
         await loadSlots(selectedDoctor);
       }
       if (bookingEmail.toLowerCase() === payload.email) {
         await loadBookings(payload.email, true);
       }
     } catch (submitError) {
-      setError(friendlyErrorMessage(submitError, "We couldn't complete your booking. Please try again."));
+      setBookingError(friendlyErrorMessage(submitError, "We couldn't complete your booking. Please try again."));
     } finally {
       setSubmitting(false);
     }
@@ -241,23 +252,37 @@ export default function App() {
 
   async function loadBookings(value = bookingEmail, replace = false, cursor?: string) {
     const normalizedEmail = value.trim().toLowerCase();
+    setAppointmentsError("");
+    setAppointmentsMessage(null);
     if (!normalizedEmail) {
-      setError("Enter the email address you used when booking.");
+      setAppointmentsError("Enter the email address you used when booking.");
       return;
     }
     setLoadingBookings(true);
-    setError("");
     try {
       const query = new URLSearchParams({ email: normalizedEmail, limit: "10" });
       if (cursor) query.set("cursor", cursor);
       const result = await apiRequest<BookingPage>(`/bookings?${query}`);
+      const activeBookings = result.bookings.filter(
+        (booking) =>
+          booking.status === "confirmed" &&
+          !cancelledBookingIdsRef.current.has(booking.id)
+      );
       setBookings((previous) =>
-        replace ? result.bookings : [...previous, ...result.bookings]
+        replace ? activeBookings : [...previous, ...activeBookings]
       );
       setBookingEmail(normalizedEmail);
       setNextCursor(result.next_cursor);
+      if (activeBookings.length === 0 && (replace || bookings.length === 0)) {
+        setAppointmentsMessage({
+          type: "info",
+          text: result.next_cursor
+            ? "No active appointments on this page. Load more to continue."
+            : "No appointments found for that email address.",
+        });
+      }
     } catch (loadError) {
-      setError(friendlyErrorMessage(loadError, "We couldn't load your appointments. Please try again."));
+      setAppointmentsError(friendlyErrorMessage(loadError, "We couldn't load your appointments. Please try again."));
     } finally {
       setLoadingBookings(false);
     }
@@ -265,38 +290,123 @@ export default function App() {
 
   async function findBooking(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError("");
+    setLookupMessage(null);
+    setLookupBooking(null);
+    setLookingUp(true);
     try {
       const booking = await apiRequest<Booking>(
         `/bookings/${encodeURIComponent(lookupId.trim())}`
       );
+      if (booking.status === "cancelled") {
+        setBookingDetailsOpen(false);
+        setLookupMessage({
+          type: "info",
+          text: "Appointment not found or has been cancelled.",
+        });
+        return;
+      }
       setLookupBooking(booking);
+      setBookingDetailsOpen(true);
+      if (!slotById[booking.slot_id]) {
+        try {
+          const result = await apiRequest<SlotList>("/slots");
+          const slotsById = Object.fromEntries(
+            result.slots.map((slot) => [slot.id, slot])
+          );
+          setSlotById(slotsById);
+          if (!slotsById[booking.slot_id]) {
+            setLookupMessage({
+              type: "error",
+              text: "We found the booking, but couldn't load its appointment details.",
+            });
+          }
+        } catch (detailsError) {
+          setLookupMessage({
+            type: "error",
+            text: friendlyErrorMessage(
+              detailsError,
+              "We found the booking, but couldn't load its appointment details."
+            ),
+          });
+        }
+      }
     } catch (lookupError) {
       setLookupBooking(null);
-      setError(friendlyErrorMessage(lookupError, "We couldn't find that appointment. Check the confirmation number and try again."));
+      setLookupMessage({
+        type: "error",
+        text: friendlyErrorMessage(lookupError, "Appointment not found or has been cancelled."),
+      });
+    } finally {
+      setLookingUp(false);
     }
   }
 
-  async function cancelBooking(booking: Booking) {
-    setError("");
+  async function cancelBooking(
+    booking: Booking,
+    location: BookingMessageLocation
+  ) {
+    const messageKey = `${location}:${booking.id}`;
+    setBookingMessages((previous) => {
+      const next = { ...previous };
+      delete next[messageKey];
+      return next;
+    });
     try {
       const updated = await apiRequest<Booking>(
         `/bookings/${encodeURIComponent(booking.id)}`,
         { method: "DELETE" }
       );
+      cancelledBookingIdsRef.current.add(updated.id);
       setBookings((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item))
+        current.filter((item) => item.id !== updated.id)
       );
-      if (lookupBooking?.id === updated.id) setLookupBooking(updated);
-      setNotice("Your appointment has been cancelled.");
+      if (lookupBooking?.id === updated.id) {
+        setLookupBooking(null);
+        setBookingDetailsOpen(false);
+        setLookupMessage({
+          type: "info",
+          text: "Appointment not found or has been cancelled.",
+        });
+      }
+      if (location === "appointments") {
+        setAppointmentsMessage({
+          type: "success",
+          text: "The appointment has been cancelled.",
+        });
+      }
       await loadDoctors();
       if (selectedDoctor) {
-        setSlotPage(0);
-        setSlotCursors([]);
         await loadSlots(selectedDoctor);
       }
     } catch (cancelError) {
-      setError(friendlyErrorMessage(cancelError, "We couldn't cancel this appointment. Please try again."));
+      setBookingMessages((previous) => ({
+        ...previous,
+        [messageKey]: {
+          type: "error",
+          text: friendlyErrorMessage(cancelError, "We couldn't cancel this appointment. Please try again."),
+        },
+      }));
+    }
+  }
+
+  function requestCancellation(
+    booking: Booking,
+    location: BookingMessageLocation
+  ) {
+    setPendingCancellation({ booking, location });
+  }
+
+  async function confirmCancellation() {
+    if (!pendingCancellation || cancelling) return;
+    setCancelling(true);
+    try {
+      await cancelBooking(
+        pendingCancellation.booking,
+        pendingCancellation.location
+      );
+    } finally {
+      setPendingCancellation(null);
+      setCancelling(false);
     }
   }
 
@@ -317,7 +427,7 @@ export default function App() {
           <p className="hero-description">
             Find a time with a trusted provider. A few clicks is all it takes to get started.
           </p>
-          <a className="text-link" href="#appointments">Explore appointments <span aria-hidden="true">↓</span></a>
+          <a className="text-link" href="#appointments">Book an appointment <span aria-hidden="true">↓</span></a>
         </div>
         <div className="hero-art" aria-hidden="true">
           <div className="sun-disc" />
@@ -330,13 +440,6 @@ export default function App() {
         </div>
       </section>
 
-      {(error || notice) && (
-        <div className={`feedback ${error ? "feedback-error" : "feedback-success"}`} role={error ? "alert" : "status"}>
-          <span>{error || notice}</span>
-          <button type="button" onClick={() => { setError(""); setNotice(""); }} aria-label="Dismiss message">×</button>
-        </div>
-      )}
-
       <section className="appointments-section" id="appointments">
         <div className="section-heading">
           <div>
@@ -344,6 +447,10 @@ export default function App() {
             <p className="section-description">Select a doctor to see their available appointment times.</p>
           </div>
         </div>
+
+        {availabilityError && (
+          <InlineFeedback message={{ type: "error", text: availabilityError }} />
+        )}
 
         {loadingDoctors ? (
           <div className="empty-state"><span className="loader" /> Finding available doctors…</div>
@@ -366,9 +473,6 @@ export default function App() {
                   slotsRequestRef.current += 1;
                   setSelectedDoctor(doctor.name);
                   setSlots([]);
-                  setNextSlotCursor(null);
-                  setSlotPage(0);
-                  setSlotCursors([]);
                   setSelectedDate("");
                 }}
               >
@@ -399,9 +503,6 @@ export default function App() {
                   slotsRequestRef.current += 1;
                   setSelectedDoctor("");
                   setSlots([]);
-                  setNextSlotCursor(null);
-                  setSlotPage(0);
-                  setSlotCursors([]);
                   setSelectedDate("");
                 }}
               >
@@ -443,35 +544,6 @@ export default function App() {
                   })}
                 </div>
                 <p className="calendar-guidance">Select a day and choose an available time.</p>
-                {(slotPage > 0 || nextSlotCursor) && (
-                <nav className="slot-pagination" aria-label="Available appointment pages">
-                  <button
-                    className="slot-page-button"
-                    type="button"
-                    disabled={loadingSlots || slotPage === 0}
-                    onClick={() => {
-                      const previousPage = slotPage - 1;
-                      const cursor = previousPage === 0
-                        ? undefined
-                        : slotCursors[previousPage - 1];
-                      void changeSlotPage(cursor, previousPage);
-                    }}
-                  >
-                    Previous
-                  </button>
-                  <span className="slot-page-status" aria-live="polite">
-                    Page {slotPage + 1}
-                  </span>
-                  <button
-                    className="slot-page-button"
-                    type="button"
-                    disabled={loadingSlots || !nextSlotCursor}
-                    onClick={() => void changeSlotPage(nextSlotCursor ?? undefined, slotPage + 1)}
-                  >
-                    {loadingSlots ? "Loading…" : "Next"}
-                  </button>
-                </nav>
-                )}
               </div>
             )}
           </div>
@@ -481,56 +553,62 @@ export default function App() {
       <section className="manage-section" id="my-bookings">
         <div className="manage-intro">
           <p className="eyebrow">ALREADY BOOKED?</p>
-          <h2>Your care,<br /><em>on your terms.</em></h2>
+          <h2>Manage your<br /><em>appointments.</em></h2>
           <p>Look up a confirmation or manage your upcoming visits in one place.</p>
         </div>
-        <div className="manage-panels">
-          <form className="manage-card" onSubmit={findBooking}>
-            <span className="card-number">01</span>
-            <h3>Find a booking</h3>
-            <p>Enter your confirmation number to see appointment details.</p>
-            <div className="inline-form">
-              <label className="sr-only" htmlFor="booking-id">Confirmation number</label>
-              <input id="booking-id" value={lookupId} onChange={(event) => setLookupId(event.target.value)} placeholder="e.g. clx8..." required />
-              <button className="button button-dark" type="submit">Look up</button>
-            </div>
-            {lookupBooking && (
-              <BookingSummary
-                booking={lookupBooking}
-                slot={slots.find((slot) => slot.id === lookupBooking.slot_id)}
-                onCancel={cancelBooking}
-              />
-            )}
-          </form>
-
-          <div className="manage-card">
-            <span className="card-number">02</span>
-            <h3>My appointments</h3>
-            <p>See your bookings with the email address you used.</p>
-            <form className="inline-form" onSubmit={(event) => { event.preventDefault(); void loadBookings(bookingEmail, true); }}>
-              <label className="sr-only" htmlFor="booking-email">Email address</label>
-              <input id="booking-email" type="email" value={bookingEmail} onChange={(event) => setBookingEmail(event.target.value)} placeholder="you@example.com" required />
-              <button className="button button-dark" type="submit" disabled={loadingBookings}>{loadingBookings ? "Loading…" : "Show mine"}</button>
-            </form>
-            {bookings.length > 0 && (
-              <div className="booking-list">
-                {bookings.map((booking) => (
-                  <BookingSummary
-                    key={booking.id}
-                    booking={booking}
-                    slot={slots.find((slot) => slot.id === booking.slot_id)}
-                    onCancel={cancelBooking}
-                    compact
-                  />
-                ))}
-                {nextCursor && (
-                  <button className="load-more" type="button" disabled={loadingBookings} onClick={() => void loadBookings(bookingEmail, false, nextCursor)}>
-                    {loadingBookings ? "Loading…" : "Load more appointments"}
-                  </button>
-                )}
-              </div>
-            )}
+        <form className="manage-card manage-lookup-card" onSubmit={findBooking}>
+          <h3>Find a booking</h3>
+          <p>Enter your confirmation number to see appointment details.</p>
+          <div className="inline-form">
+            <label className="sr-only" htmlFor="booking-id">Confirmation number</label>
+            <input id="booking-id" value={lookupId} onChange={(event) => { setLookupId(event.target.value); setLookupMessage(null); setLookupBooking(null); }} placeholder="e.g. clx8..." required />
+            <button className="button button-dark" type="submit" disabled={lookingUp}>
+              {lookingUp ? "Looking up…" : "Look up"}
+            </button>
           </div>
+          {lookupMessage && <InlineFeedback message={lookupMessage} />}
+          {lookupBooking && (
+            <BookingSummary
+              booking={lookupBooking}
+              slot={slotById[lookupBooking.slot_id]}
+              onCancel={requestCancellation}
+              onDetails={() => setBookingDetailsOpen(true)}
+              message={bookingMessages[`lookup:${lookupBooking.id}`]}
+            />
+          )}
+        </form>
+
+        <div className="manage-card appointments-card">
+          <h3>My appointments</h3>
+          <p>See your bookings with the email address you used.</p>
+          <form className="inline-form" onSubmit={(event) => { event.preventDefault(); void loadBookings(bookingEmail, true); }}>
+            <label className="sr-only" htmlFor="booking-email">Email address</label>
+            <input id="booking-email" type="email" value={bookingEmail} onChange={(event) => { setBookingEmail(event.target.value); setAppointmentsError(""); setAppointmentsMessage(null); }} placeholder="you@example.com" required />
+            <button className="button button-dark" type="submit" disabled={loadingBookings}>{loadingBookings ? "Loading…" : "Show mine"}</button>
+          </form>
+          {appointmentsError && (
+            <InlineFeedback message={{ type: "error", text: appointmentsError }} />
+          )}
+          {appointmentsMessage && <InlineFeedback message={appointmentsMessage} />}
+          {(bookings.length > 0 || nextCursor) && (
+            <div className="booking-list">
+              {bookings.map((booking) => (
+                <BookingSummary
+                  key={booking.id}
+                  booking={booking}
+                  slot={slotById[booking.slot_id]}
+                  onCancel={requestCancellation}
+                  message={bookingMessages[`appointments:${booking.id}`]}
+                  compact
+                />
+              ))}
+              {nextCursor && (
+                <button className="load-more" type="button" disabled={loadingBookings} onClick={() => void loadBookings(bookingEmail, false, nextCursor)}>
+                  {loadingBookings ? "Loading…" : "Load more appointments"}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -539,6 +617,146 @@ export default function App() {
         <span>Care, made a little easier.</span>
         <a href="#appointments">Back to top ↑</a>
       </footer>
+
+      {bookingSuccess && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setBookingSuccess(null);
+            }
+          }}
+        >
+          <section
+            className="booking-modal booking-success-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="booking-success-title"
+          >
+            <button
+              className="modal-close"
+              type="button"
+              onClick={() => setBookingSuccess(null)}
+              aria-label="Close booking confirmation"
+            >
+              ×
+            </button>
+            <p className="eyebrow">BOOKING CONFIRMED</p>
+            <h2 id="booking-success-title">You're booked!</h2>
+            <p className="cancellation-description">
+              Save your confirmation number to look up or manage this appointment.
+            </p>
+            <dl className="booking-details-list">
+              <div><dt>Confirmation number</dt><dd>{bookingSuccess.booking.id}</dd></div>
+              <div><dt>Doctor</dt><dd>{bookingSuccess.slot.provider}</dd></div>
+              <div><dt>Appointment time</dt><dd>{formatDateTime(bookingSuccess.slot.start)}</dd></div>
+              <div><dt>Name</dt><dd>{bookingSuccess.booking.name}</dd></div>
+              <div><dt>Email</dt><dd>{bookingSuccess.booking.email}</dd></div>
+            </dl>
+            <button
+              className="button button-dark button-wide"
+              type="button"
+              onClick={() => setBookingSuccess(null)}
+            >
+              Close
+            </button>
+          </section>
+        </div>
+      )}
+
+      {pendingCancellation && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !cancelling) {
+              setPendingCancellation(null);
+            }
+          }}
+        >
+          <section
+            className="booking-modal cancellation-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="cancellation-title"
+            aria-describedby="cancellation-description"
+          >
+            <button
+              className="modal-close"
+              type="button"
+              onClick={() => setPendingCancellation(null)}
+              aria-label="Close cancellation confirmation"
+              disabled={cancelling}
+            >
+              ×
+            </button>
+            <h2 id="cancellation-title">Cancel this appointment?</h2>
+            <p id="cancellation-description" className="cancellation-description">
+              {pendingCancellation.booking.name}'s appointment
+              {slotById[pendingCancellation.booking.slot_id] && (
+                <> with {slotById[pendingCancellation.booking.slot_id].provider} on{" "}
+                  {formatDateTime(slotById[pendingCancellation.booking.slot_id].start)}</>
+              )}{" "}
+              will be cancelled.
+            </p>
+            <div className="cancellation-actions">
+              <button
+                className="button button-light"
+                type="button"
+                onClick={() => setPendingCancellation(null)}
+                disabled={cancelling}
+              >
+                Keep appointment
+              </button>
+              <button
+                className="button button-cancel"
+                type="button"
+                onClick={() => void confirmCancellation()}
+                disabled={cancelling}
+              >
+                {cancelling ? "Cancelling…" : "Cancel appointment"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {bookingDetailsOpen && lookupBooking && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setBookingDetailsOpen(false);
+            }
+          }}
+        >
+          <section
+            className="booking-modal booking-details-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="booking-details-title"
+          >
+            <button
+              className="modal-close"
+              type="button"
+              onClick={() => setBookingDetailsOpen(false)}
+              aria-label="Close booking details"
+            >
+              ×
+            </button>
+            <p className="eyebrow">BOOKING DETAILS</p>
+            <h2 id="booking-details-title">Your appointment</h2>
+            <dl className="booking-details-list">
+              <div><dt>Confirmation number</dt><dd>{lookupBooking.id}</dd></div>
+              <div><dt>Name</dt><dd>{lookupBooking.name}</dd></div>
+              <div><dt>Email</dt><dd>{lookupBooking.email}</dd></div>
+              <div><dt>Doctor</dt><dd>{slotById[lookupBooking.slot_id]?.provider ?? "Unavailable"}</dd></div>
+              <div><dt>Appointment time</dt><dd>{slotById[lookupBooking.slot_id] ? formatDateTime(slotById[lookupBooking.slot_id].start) : "Unavailable"}</dd></div>
+              <div><dt>Status</dt><dd className={`booking-status ${lookupBooking.status}`}>{lookupBooking.status}</dd></div>
+              <div><dt>Booked</dt><dd>{formatDateTime(lookupBooking.created_at)}</dd></div>
+            </dl>
+          </section>
+        </div>
+      )}
 
       {bookingModalOpen && selectedDate && (
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeBookingModal(); }}>
@@ -564,6 +782,7 @@ export default function App() {
                       onClick={() => {
                         setSelectedSlot(slot);
                         setBookingStep("details");
+                        setBookingError("");
                       }}
                     >
                       {new Intl.DateTimeFormat(undefined, {
@@ -592,12 +811,15 @@ export default function App() {
                 )}
                 <form onSubmit={submitBooking} className="booking-form">
                   <label htmlFor="name">Your name</label>
-                  <input id="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} />
+                  <input id="name" autoComplete="name" value={name} onChange={(event) => { setName(event.target.value); setBookingError(""); }} required maxLength={120} />
                   <label htmlFor="email">Email address</label>
-                  <input id="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required maxLength={254} />
+                  <input id="email" type="email" autoComplete="email" value={email} onChange={(event) => { setEmail(event.target.value); setBookingError(""); }} required maxLength={254} />
                   <button className="button button-dark button-wide" type="submit" disabled={submitting}>
                     {submitting ? "Confirming…" : "Confirm appointment"}
                   </button>
+                  {bookingError && (
+                    <InlineFeedback message={{ type: "error", text: bookingError }} />
+                  )}
                   <span className="privacy-note">Your details are only used to manage this appointment.</span>
                 </form>
               </>
@@ -613,23 +835,61 @@ function BookingSummary({
   booking,
   slot,
   onCancel,
+  onDetails,
+  message,
   compact = false,
 }: {
   booking: Booking;
   slot?: Slot;
-  onCancel: (booking: Booking) => void;
+  onCancel: (booking: Booking, location: BookingMessageLocation) => void;
+  onDetails?: () => void;
+  message?: InlineMessage;
   compact?: boolean;
 }) {
   return (
-    <div className={`booking-summary ${compact ? "booking-summary-compact" : ""}`}>
-      <div>
-        <span className={`booking-status ${booking.status}`}>{booking.status}</span>
-        <strong>{booking.name}</strong>
-        <span>{slot ? formatDateTime(slot.start) : `Booked ${formatDateTime(booking.created_at)}`} · Ref {booking.id}</span>
+    <div>
+      <div className={`booking-summary ${compact ? "booking-summary-compact" : ""}`}>
+        <div>
+          <span className={`booking-status ${booking.status}`}>{booking.status}</span>
+          <strong>{booking.name}</strong>
+          <span>{slot ? formatDateTime(slot.start) : `Booked ${formatDateTime(booking.created_at)}`}</span>
+          {slot && <span>Doctor: {slot.provider}</span>}
+          <span className="booking-reference">Ref {booking.id}</span>
+        </div>
+        <div className="booking-actions">
+          {booking.status === "confirmed" && (
+            <button
+              type="button"
+              className="cancel-link"
+              onClick={() => onCancel(booking, compact ? "appointments" : "lookup")}
+            >
+              Cancel
+            </button>
+          )}
+          {onDetails && (
+            <button
+              type="button"
+              className="booking-details-link"
+              onClick={onDetails}
+            >
+              Details
+            </button>
+          )}
+        </div>
       </div>
-      {booking.status === "confirmed" && (
-        <button type="button" className="cancel-link" onClick={() => onCancel(booking)}>Cancel</button>
-      )}
+      {message && <InlineFeedback message={message} />}
+    </div>
+  );
+}
+
+function InlineFeedback({ message }: { message: InlineMessage }) {
+  const isError = message.type === "error";
+  return (
+    <div
+      className={`feedback feedback-${message.type} inline-feedback`}
+      role={isError ? "alert" : "status"}
+    >
+      <span>{message.text}</span>
     </div>
   );
 }

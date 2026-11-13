@@ -24,13 +24,14 @@ Do not use a `VITE_API_KEY` variable. Only `BACKEND_API_URL` and `BACKEND_API_KE
 
 ## API
 
-All API routes, except `GET /health`, require `X-API-Key`.
+Swagger UI is available publicly at `/docs`, with the OpenAPI 3 specification at `/openapi.json`. All six assessment API routes require `X-API-Key`; the documentation endpoints do not.
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/docs` | Interactive Swagger UI documentation (public) |
+| GET | `/openapi.json` | OpenAPI 3 specification (public) |
 | POST | `/reset` | Replace all slots and clear bookings/attempts/idempotency data; responds with an empty 200 body |
-| GET | `/doctors` | List doctors with at least one unbooked slot |
-| GET | `/slots` | List slots by start time with `limit` and `cursor` pagination; optional `provider` and `available_only=true` filters |
+| GET | `/slots` | List all slots by start time; optional exact-match `provider` filter |
 | POST | `/bookings` | Create a confirmed booking; supports `Idempotency-Key` and per-email rate limiting |
 | GET | `/bookings/:id` | Get a booking |
 | DELETE | `/bookings/:id` | Cancel a confirmed booking |
@@ -42,13 +43,13 @@ The integration tests call `/reset`, which deletes all booking data and slots. *
 
 Create `server/.env.test` from `server/.env.test.example`, and provide a dedicated local database or isolated Neon test branch using `TEST_DATABASE_URL` and `TEST_DIRECT_URL`. The test setup requires the explicit `ALLOW_DESTRUCTIVE_TEST_DB=yes` opt-in and refuses to run if the test URL matches the normal `server/.env` database URL.
 
-From `server/`, apply migrations to that test database with `npm run db:deploy:test`, then run `npm test`. Both commands load only the explicit test URLs from `.env.test` and refuse to proceed if they match `server/.env`. The suite covers authentication, validation, booking/cancellation, cursor pagination, idempotency replays, and concurrent slot/rate-limit requests.
+From `server/`, apply migrations to that test database with `npm run db:deploy:test`, then run `npm test`. Both commands load only the explicit test URLs from `.env.test` and refuse to proceed if they match `server/.env`. The suite covers authentication, validation, booking/cancellation, booking-list cursor pagination, idempotency replays, and concurrent slot/rate-limit requests.
 
 ## Deployment
 
 ### Render API
 
-The root `render.yaml` configures the service with `server/` as its root, `npm ci && npm run build`, `npm run db:deploy` as the pre-deploy migration, `npm start`, and `/health` as its health check. Set:
+The root `render.yaml` configures the service with `server/` as its root, `npm ci && npm run build`, `npm run db:deploy` as the pre-deploy migration, and `npm start`. Set:
 
 | Variable | Purpose |
 |---|---|
@@ -61,4 +62,4 @@ The root `render.yaml` configures the service with `server/` as its root, `npm c
 
 Deploy with `client/` as the Vercel project root. The `client/api/[...path].ts` function forwards requests to `BACKEND_API_URL` and injects `BACKEND_API_KEY`; configure both as server-only Vercel environment variables. `BACKEND_API_KEY` must match Render's `API_KEY`. Do not add a `VITE_` prefix to either secret.
 
-Before sharing the deployment, smoke-test `/health` and the authenticated API directly on Render, then test the client through Vercel. Production deployment and credential-dependent smoke tests must be completed in the hosting accounts.
+Before sharing the deployment, smoke-test `/openapi.json` and the authenticated API directly on Render, then test the client through Vercel. Production deployment and credential-dependent smoke tests must be completed in the hosting accounts.

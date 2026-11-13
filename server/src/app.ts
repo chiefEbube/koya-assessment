@@ -1,12 +1,21 @@
 import "dotenv/config";
-import express from "express";
+import express, { type RequestHandler } from "express";
 import cors from "cors";
 import helmet from "helmet";
+import swaggerUi from "swagger-ui-express";
 import { apiKeyAuth } from "./middleware/api-key.js";
 import apiRouter from "./routes/api.js";
 import { errorHandler } from "./middleware/error-handler.js";
+import { openApiSpec } from "./docs/openapi.js";
 
 const app = express();
+const swaggerDocsCsp: RequestHandler = (_req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
+  );
+  next();
+};
 
 app.use(helmet());
 
@@ -18,17 +27,20 @@ app.use(
   })
 );
 
-// Public health check
-app.get("/health", (_req, res) => {
-  res.status(200).json({
-    status: "ok",
-    service: "clinic-booking-api",
-  });
+app.use(
+  "/docs",
+  swaggerDocsCsp,
+  swaggerUi.serve,
+  swaggerUi.setup(openApiSpec)
+);
+
+app.get("/openapi.json", (_req, res) => {
+  res.json(openApiSpec);
 });
 
 // Protect the assessment API endpoints
 app.use(apiKeyAuth);
-app.use(express.json({ limit: "10kb" }));
+app.use(express.json({ limit: "1mb" }));
 
 app.use(apiRouter);
 

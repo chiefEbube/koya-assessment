@@ -69,56 +69,92 @@ describe("clinic booking API", () => {
       .expect(({ body }) => expect(body.id).toBe(response.body.id));
   });
 
-  it("lists available doctors and paginates available slots deterministically", async () => {
+  it("lists all slots in deterministic order and filters exactly by provider", async () => {
+    const availableSlots = "abcdefghijkl".split("").map((letter) =>
+      slot(`slot-${letter}`)
+    );
     await reset([
-      slot("slot-a"),
-      slot("slot-b"),
-      slot("slot-c"),
-      { ...slot("slot-d"), provider: "Dr Unavailable" },
+      ...availableSlots,
+      { ...slot("slot-z"), provider: "Dr Unavailable" },
     ]);
     await request(app)
       .post("/bookings")
       .set(headers)
       .send({
-        slot_id: "slot-d",
+        slot_id: "slot-z",
         name: "Ada",
         email: "ada@example.com",
       })
       .expect(201);
 
-    await request(app)
-      .get("/doctors")
-      .set(headers)
-      .expect(200)
-      .expect(({ body }) => expect(body.doctors).toEqual([
-        { name: "Dr Test", available_slots: 3 },
-      ]));
-
-    const firstPage = await request(app)
+    const allSlots = await request(app)
       .get("/slots")
-      .query({ provider: "Dr Test", available_only: "true", limit: 2 })
+      .query({ limit: "0", cursor: "invalid", available_only: "sometimes" })
       .set(headers)
       .expect(200);
-    expect(firstPage.body.slots.map((item: { id: string }) => item.id)).toEqual([
+    expect(Object.keys(allSlots.body)).toEqual(["slots"]);
+    expect(allSlots.body.slots).toHaveLength(13);
+    expect(allSlots.body.slots.map((item: { id: string }) => item.id)).toEqual([
       "slot-a",
       "slot-b",
+      "slot-c",
+      "slot-d",
+      "slot-e",
+      "slot-f",
+      "slot-g",
+      "slot-h",
+      "slot-i",
+      "slot-j",
+      "slot-k",
+      "slot-l",
+      "slot-z",
     ]);
-    expect(firstPage.body.next_cursor).toEqual(expect.any(String));
+    expect(Object.keys(allSlots.body.slots[0])).toEqual([
+      "id",
+      "provider",
+      "start",
+      "end",
+      "available",
+    ]);
 
-    const secondPage = await request(app)
+    const providerSlots = await request(app)
       .get("/slots")
-      .query({
-        provider: "Dr Test",
-        available_only: "true",
-        limit: 2,
-        cursor: firstPage.body.next_cursor,
-      })
+      .query({ provider: "Dr Test" })
       .set(headers)
       .expect(200);
-    expect(secondPage.body.slots.map((item: { id: string }) => item.id)).toEqual([
-      "slot-c",
-    ]);
-    expect(secondPage.body.next_cursor).toBeNull();
+    expect(providerSlots.body.slots).toHaveLength(12);
+    expect(
+      providerSlots.body.slots.every(
+        (item: { provider: string; available: boolean }) =>
+          item.provider === "Dr Test" && item.available
+      )
+    ).toBe(true);
+
+    const unavailableSlots = await request(app)
+      .get("/slots")
+      .query({ provider: "Dr Unavailable" })
+      .set(headers)
+      .expect(200);
+    expect(unavailableSlots.body.slots).toHaveLength(1);
+    expect(unavailableSlots.body.slots[0].available).toBe(false);
+    await request(app)
+      .get("/slots")
+      .query({ provider: "dr test" })
+      .set(headers)
+      .expect(200)
+      .expect(({ body }) => expect(body.slots).toEqual([]));
+  });
+
+  it("accepts resets larger than the former JSON body limit", async () => {
+    const manySlots = Array.from({ length: 120 }, (_, index) =>
+      slot(`slot-${String(index).padStart(3, "0")}`)
+    );
+    await reset(manySlots);
+    await request(app)
+      .get("/slots")
+      .set(headers)
+      .expect(200)
+      .expect(({ body }) => expect(body.slots).toHaveLength(120));
   });
 
   it("requires the API key and validates booking fields", async () => {
@@ -138,6 +174,29 @@ describe("clinic booking API", () => {
       .set(headers)
       .send({ slot_id: "missing", name: "Ada", email: "ada@example.com" })
       .expect(404);
+  });
+
+  it("serves Swagger UI and the OpenAPI spec without API authentication", async () => {
+    const docs = await request(app).get("/docs/").expect(200);
+    expect(docs.text).toContain("swagger-ui");
+    expect(docs.headers["content-security-policy"]).toContain("'unsafe-inline'");
+
+    const spec = await request(app).get("/openapi.json").expect(200);
+    expect(spec.body.openapi).toBe("3.0.3");
+    expect(spec.body.paths["/bookings"]).toBeDefined();
+    expect(Object.keys(spec.body.paths).sort()).toEqual([
+      "/bookings",
+      "/bookings/{id}",
+      "/reset",
+      "/slots",
+    ]);
+    expect(spec.body.components.securitySchemes.ApiKeyAuth.name).toBe(
+      "X-API-Key"
+    );
+
+    await request(app).get("/slots").expect(401);
+    await request(app).get("/health").set(headers).expect(404);
+    await request(app).get("/doctors").set(headers).expect(404);
   });
 
   it("allows exactly one concurrent booking for a slot", async () => {
@@ -289,6 +348,32 @@ describe("clinic booking API", () => {
     const retryAfter = limited[0]?.headers["retry-after"];
     expect(retryAfter).toBeDefined();
     expect(Number(retryAfter)).toBeGreaterThan(0);
+  });
+
+  it("does not rate-limit requests with a missing or blank email", async () => {
+    for (const email of [undefined, "", "   "]) {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await request(app)
+          .post("/bookings")
+          .set(headers)
+          .send({
+            slot_id: "slot-1",
+            name: "Ada",
+            ...(email === undefined ? {} : { email }),
+          })
+          .expect(400);
+      }
+    }
+
+    await request(app)
+      .post("/bookings")
+      .set(headers)
+      .send({
+        slot_id: "slot-1",
+        name: "Ada",
+        email: "ada@example.com",
+      })
+      .expect(201);
   });
 
   it("does not charge idempotent replays against the attempt limit", async () => {

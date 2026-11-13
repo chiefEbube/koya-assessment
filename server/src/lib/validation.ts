@@ -102,39 +102,7 @@ export function parseBookingsQuery(query: {
   };
 }
 
-export function parseSlotsQuery(query: {
-  provider?: unknown;
-  limit?: unknown;
-  cursor?: unknown;
-  available_only?: unknown;
-}) {
+export function parseSlotsQuery(query: { provider?: unknown }) {
   const provider = parseProvider(query.provider);
-  let limit = 10;
-  if (query.limit !== undefined) {
-    if (typeof query.limit !== "string" || !/^[0-9]+$/.test(query.limit)) {
-      throw new AppError(400, "invalid limit");
-    }
-    limit = Number(query.limit);
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
-      throw new AppError(400, "invalid limit");
-    }
-  }
-
-  if (query.cursor !== undefined && typeof query.cursor !== "string") {
-    throw new AppError(400, "invalid cursor");
-  }
-  if (
-    query.available_only !== undefined &&
-    query.available_only !== "true" &&
-    query.available_only !== "false"
-  ) {
-    throw new AppError(400, "invalid available_only");
-  }
-
-  return {
-    provider,
-    limit,
-    cursor: query.cursor as string | undefined,
-    availableOnly: query.available_only === "true",
-  };
+  return { provider };
 }

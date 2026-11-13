@@ -9,7 +9,7 @@ import {
 } from "../lib/validation.js";
 import { createBooking } from "../services/booking-service.js";
 import { listBookings } from "../services/booking-list-service.js";
-import { listAvailableDoctors, listSlots } from "../services/slot-list-service.js";
+import { listSlots } from "../services/slot-list-service.js";
 
 const router = Router();
 
@@ -27,20 +27,9 @@ router.post("/reset", async (req, res) => {
   res.status(200).end();
 });
 
-router.get("/doctors", async (_req, res) => {
-  res.json(await listAvailableDoctors());
-});
-
 router.get("/slots", async (req, res) => {
   const query = parseSlotsQuery(req.query);
-  res.json(
-    await listSlots(
-      query.provider,
-      query.limit,
-      query.cursor,
-      query.availableOnly
-    )
-  );
+  res.json(await listSlots(query.provider));
 });
 
 router.get("/bookings", async (req, res) => {
