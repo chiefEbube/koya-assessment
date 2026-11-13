@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
       allowedHosts: ["stainless-effects-confess.ngrok-free.dev"],
       proxy: {
         "/api": {
-          target: env.BACKEND_API_URL || "http://localhost:5000",
+          target: env.BACKEND_API_URL,
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api/, ""),
           configure: (proxy) => {
