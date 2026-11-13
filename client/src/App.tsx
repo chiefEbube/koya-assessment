@@ -246,7 +246,7 @@ export default function App() {
       setBookingSuccess({ booking, slot: selectedSlot });
       setSelectedSlot(null);
       setName("");
-      setEmail(payload.email);
+      setEmail("");
       submissionRef.current = null;
       setBookingModalOpen(false);
       await loadDoctors();
@@ -314,7 +314,6 @@ export default function App() {
       const booking = await apiRequest<Booking>(
         `/bookings/${encodeURIComponent(lookupId.trim())}`
       );
-      setLookupId("");
       if (booking.status === "cancelled") {
         setBookingDetailsOpen(false);
         setLookupMessage({
@@ -324,6 +323,7 @@ export default function App() {
         return;
       }
       setLookupBooking(booking);
+      setLookupId("");
       setBookingDetailsOpen(true);
       if (!slotById[booking.slot_id]) {
         try {
