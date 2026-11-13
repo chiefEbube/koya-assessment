@@ -100,7 +100,6 @@ export default function App() {
   } | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [bookingEmail, setBookingEmail] = useState("");
-  const [loadedBookingEmail, setLoadedBookingEmail] = useState("");
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [appointmentsError, setAppointmentsError] = useState("");
   const [appointmentsMessage, setAppointmentsMessage] = useState<InlineMessage | null>(null);
@@ -246,17 +245,14 @@ export default function App() {
       setBookingSuccess({ booking, slot: selectedSlot });
       setSelectedSlot(null);
       setName("");
-      setEmail("");
+      setEmail(payload.email);
       submissionRef.current = null;
       setBookingModalOpen(false);
       await loadDoctors();
       if (selectedDoctor) {
         await loadSlots(selectedDoctor);
       }
-      if (
-        loadedBookingEmail === payload.email ||
-        bookingEmail.trim().toLowerCase() === payload.email
-      ) {
+      if (bookingEmail.toLowerCase() === payload.email) {
         await loadBookings(payload.email, true);
       }
     } catch (submitError) {
@@ -287,8 +283,7 @@ export default function App() {
       setBookings((previous) =>
         replace ? activeBookings : [...previous, ...activeBookings]
       );
-      setLoadedBookingEmail(normalizedEmail);
-      if (replace) setBookingEmail("");
+      setBookingEmail(normalizedEmail);
       setNextCursor(result.next_cursor);
       if (activeBookings.length === 0 && (replace || bookings.length === 0)) {
         setAppointmentsMessage({
@@ -323,7 +318,6 @@ export default function App() {
         return;
       }
       setLookupBooking(booking);
-      setLookupId("");
       setBookingDetailsOpen(true);
       if (!slotById[booking.slot_id]) {
         try {
@@ -621,7 +615,7 @@ export default function App() {
                 />
               ))}
               {nextCursor && (
-                <button className="load-more" type="button" disabled={loadingBookings} onClick={() => void loadBookings(loadedBookingEmail, false, nextCursor)}>
+                <button className="load-more" type="button" disabled={loadingBookings} onClick={() => void loadBookings(bookingEmail, false, nextCursor)}>
                   {loadingBookings ? "Loading…" : "Load more appointments"}
                 </button>
               )}
