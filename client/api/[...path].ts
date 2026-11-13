@@ -11,24 +11,38 @@ interface ProxyResponse extends ServerResponse {
   send(body: Buffer): this;
 }
 
+
 function upstreamUrl(request: ProxyRequest): URL | undefined {
   const base = process.env.BACKEND_API_URL;
   if (!base) return undefined;
 
+  const incomingUrl = new URL(
+    request.url ?? "/",
+    "http://localhost"
+  );
+
   const route = request.query.path;
-  const path = Array.isArray(route) ? route.join("/") : route ?? "";
-  const normalizedBase = base.endsWith("/") ? base : `${base}/`;
+
+  const path =
+    Array.isArray(route) && route.length > 0
+      ? route.join("/")
+      : typeof route === "string" && route.length > 0
+        ? route
+        : incomingUrl.pathname.replace(/^\/api\/?/, "");
+
+  const normalizedBase = base.endsWith("/")
+    ? base
+    : `${base}/`;
+
   const target = new URL(path, normalizedBase);
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(request.query)) {
-    if (key === "path" || value === undefined) continue;
-    for (const item of Array.isArray(value) ? value : [value]) {
-      query.append(key, item);
-    }
-  }
-  target.search = query.toString();
+
+  // Preserve query parameters from the original request.
+  target.search = incomingUrl.search;
+
   return target;
 }
+
+
 
 export default async function handler(
   request: ProxyRequest,
