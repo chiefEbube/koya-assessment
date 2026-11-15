@@ -5,12 +5,14 @@ import { serializeBooking } from "../lib/serialize.js";
 export async function listBookings(
   email: string,
   limit: number,
-  cursorValue?: string
+  cursorValue?: string,
+  status?: "confirmed" | "cancelled"
 ) {
   const cursor = decodeCursor(cursorValue);
   const rows = await prisma.booking.findMany({
     where: {
       email: { equals: email, mode: "insensitive" },
+      ...(status ? { status } : {}),
       ...(cursor
         ? {
             OR: [

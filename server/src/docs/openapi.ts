@@ -175,6 +175,12 @@ export const openApiSpec = {
             required: true,
             schema: { type: "string", minLength: 1 },
           },
+          {
+            name: "status",
+            in: "query",
+            description: "Optionally filter bookings before pagination.",
+            schema: { type: "string", enum: ["confirmed", "cancelled"] },
+          },
           { $ref: "#/components/parameters/Limit" },
           { $ref: "#/components/parameters/Cursor" },
         ],

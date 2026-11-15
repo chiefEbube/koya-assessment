@@ -272,13 +272,15 @@ export default function App() {
     }
     setLoadingBookings(true);
     try {
-      const query = new URLSearchParams({ email: normalizedEmail, limit: "10" });
+      const query = new URLSearchParams({
+        email: normalizedEmail,
+        limit: "10",
+        status: "confirmed",
+      });
       if (cursor) query.set("cursor", cursor);
       const result = await apiRequest<BookingPage>(`/bookings?${query}`);
       const activeBookings = result.bookings.filter(
-        (booking) =>
-          booking.status === "confirmed" &&
-          !cancelledBookingIdsRef.current.has(booking.id)
+        (booking) => !cancelledBookingIdsRef.current.has(booking.id)
       );
       setBookings((previous) =>
         replace ? activeBookings : [...previous, ...activeBookings]
@@ -288,9 +290,7 @@ export default function App() {
       if (activeBookings.length === 0 && (replace || bookings.length === 0)) {
         setAppointmentsMessage({
           type: "info",
-          text: result.next_cursor
-            ? "No active appointments on this page. Load more to continue."
-            : "No appointments found for that email address.",
+          text: "No appointments found for that email address.",
         });
       }
     } catch (loadError) {

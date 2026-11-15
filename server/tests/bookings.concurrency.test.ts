@@ -325,6 +325,34 @@ describe("clinic booking API", () => {
       .delete(`/bookings/${bookingId}`)
       .set(headers)
       .expect(409);
+
+    await request(app)
+      .get("/bookings")
+      .query({ email: "ada@example.com", limit: 1, status: "confirmed" })
+      .set(headers)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.bookings).toHaveLength(1);
+        expect(body.bookings[0].id).toBe(ids[1]);
+        expect(body.next_cursor).toBeNull();
+      });
+
+    await request(app)
+      .get("/bookings")
+      .query({ email: "ada@example.com", limit: 1 })
+      .set(headers)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.bookings).toHaveLength(1);
+        expect(body.bookings[0].status).toBe("cancelled");
+        expect(body.next_cursor).toEqual(expect.any(String));
+      });
+
+    await request(app)
+      .get("/bookings")
+      .query({ email: "ada@example.com", status: "active" })
+      .set(headers)
+      .expect(400);
   });
 
   it("limits each email to five attempts in parallel and supplies Retry-After", async () => {

@@ -71,6 +71,7 @@ export function parseBookingsQuery(query: {
   email?: unknown;
   limit?: unknown;
   cursor?: unknown;
+  status?: unknown;
 }) {
   if (typeof query.email !== "string" || query.email.trim().length === 0) {
     throw new AppError(400, "email is required");
@@ -95,10 +96,19 @@ export function parseBookingsQuery(query: {
     throw new AppError(400, "invalid cursor");
   }
 
+  if (
+    query.status !== undefined &&
+    query.status !== "confirmed" &&
+    query.status !== "cancelled"
+  ) {
+    throw new AppError(400, "invalid status");
+  }
+
   return {
     email: query.email.trim().toLowerCase(),
     limit,
     cursor: query.cursor as string | undefined,
+    status: query.status as "confirmed" | "cancelled" | undefined,
   };
 }
 

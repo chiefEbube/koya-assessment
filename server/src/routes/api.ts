@@ -34,7 +34,9 @@ router.get("/slots", async (req, res) => {
 
 router.get("/bookings", async (req, res) => {
   const query = parseBookingsQuery(req.query);
-  res.json(await listBookings(query.email, query.limit, query.cursor));
+  res.json(
+    await listBookings(query.email, query.limit, query.cursor, query.status)
+  );
 });
 
 router.post("/bookings", async (req, res) => {
